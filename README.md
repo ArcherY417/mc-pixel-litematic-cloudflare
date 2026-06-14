@@ -25,3 +25,7 @@ Build output directory: dist
 ```
 
 不需要 Python、服务器、环境变量或 `/api`。
+
+## License
+
+MIT. See `LICENSE`.
