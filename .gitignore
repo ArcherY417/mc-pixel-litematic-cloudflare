@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+tsconfig.tsbuildinfo
+
+.env
+.env.*
+*.log
+Thumbs.db
+.DS_Store

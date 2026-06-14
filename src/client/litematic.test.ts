@@ -1,0 +1,71 @@
+import { describe, expect, it } from "vitest";
+import { gunzipSync } from "fflate";
+import { createLitematicBytes, packBlockStates, pixelToRegion, schematicDimensions, type ConvertedArt } from "./litematic";
+import type { Settings } from "../types";
+
+const settings: Settings = {
+  name: "test",
+  author: "test",
+  mc_version: "1.21",
+  art_mode: "pixel",
+  target_width: 2,
+  target_height: 2,
+  lock_aspect: false,
+  fit_mode: "contain",
+  quality: "standard",
+  transparent_mode: "air",
+  palette_mode: "all",
+  custom_blocks: [],
+  replacements: {},
+  build_plane: "wall",
+  direction: "south",
+  map_columns: 1,
+  map_rows: 1,
+  map_variant: "flat",
+  show_grid: true
+};
+
+const art: ConvertedArt = {
+  width: 2,
+  height: 2,
+  depth: 1,
+  blockGrid: [
+    ["minecraft:white_wool", "minecraft:black_wool"],
+    ["minecraft:red_wool", "minecraft:blue_wool"]
+  ],
+  heightGrid: [
+    [0, 0],
+    [0, 0]
+  ],
+  previewPng: "",
+  materials: new Map(),
+  airCount: 0
+};
+
+describe("browser litematic writer helpers", () => {
+  it("packs block states using litematic bit order", () => {
+    expect(packBlockStates([1, 2], 2)).toEqual([9n]);
+  });
+
+  it("maps wall coordinates by direction", () => {
+    expect(schematicDimensions(art, settings)).toEqual([2, 2, 1]);
+    expect(pixelToRegion(0, 0, art, settings)).toEqual([1, 1, 0]);
+    expect(pixelToRegion(1, 1, art, settings)).toEqual([0, 0, 0]);
+  });
+
+  it("swaps horizontal dimensions for east and west", () => {
+    const floor = { ...settings, build_plane: "floor" as const, direction: "east" as const };
+    const wide = { ...art, width: 3, height: 2 };
+    expect(schematicDimensions(wide, floor)).toEqual([2, 1, 3]);
+  });
+
+  it("writes a gzipped litematic-shaped NBT payload", () => {
+    const bytes = createLitematicBytes({ ...art, materials: new Map([["minecraft:white_wool", 4]]) }, settings);
+    expect(bytes[0]).toBe(0x1f);
+    expect(bytes[1]).toBe(0x8b);
+    const nbt = new TextDecoder().decode(gunzipSync(bytes));
+    expect(nbt).toContain("MinecraftDataVersion");
+    expect(nbt).toContain("BlockStatePalette");
+    expect(nbt).toContain("minecraft:white_wool");
+  });
+});
