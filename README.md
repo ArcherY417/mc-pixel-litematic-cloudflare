@@ -9,6 +9,10 @@
 
 这个仓库专门给 Cloudflare Pages / GitHub Pages / 静态托管使用：没有 Python，没有服务器，没有数据库，也没有 `/api`。
 
+## Live Demo
+
+https://ciallo1337.com
+
 ## 功能亮点
 
 - 图片导入：支持 PNG、JPG、WebP、GIF 首帧。
