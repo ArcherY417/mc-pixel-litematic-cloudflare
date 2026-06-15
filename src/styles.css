@@ -514,6 +514,19 @@ input:disabled {
   pointer-events: none;
 }
 
+.legal-link {
+  color: #5e6758;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  text-decoration: none;
+}
+
+.legal-link:hover {
+  color: #234228;
+  text-decoration: underline;
+}
+
 @media (max-width: 1040px) {
   .workspace {
     grid-template-columns: 1fr;

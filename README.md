@@ -126,4 +126,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This project is not affiliated with Mojang, Microsoft, Minecraft, or Litematica.
+This project is not affiliated with Mojang, Microsoft, Minecraft, or Litematica. See [DISCLAIMER.md](DISCLAIMER.md).

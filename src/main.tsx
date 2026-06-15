@@ -442,6 +442,14 @@ function App() {
               <DownloadLink href={result?.downloads.materials_csv} icon={<Download size={18} />} label="材料 CSV" downloadName={`${safeDownloadName(settings.name)}-materials.csv`} />
               <DownloadLink href={result?.downloads.materials_json} icon={<Download size={18} />} label="材料 JSON" downloadName={`${safeDownloadName(settings.name)}-materials.json`} />
               <DownloadLink href={result?.downloads.preview_png} icon={<FileImage size={18} />} label="预览 PNG" downloadName={`${safeDownloadName(settings.name)}-preview.png`} />
+              <a
+                className="legal-link"
+                href="https://github.com/ArcherY417/mc-pixel-litematic-cloudflare/blob/main/DISCLAIMER.md"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Disclaimer
+              </a>
             </section>
           </div>
         </section>
