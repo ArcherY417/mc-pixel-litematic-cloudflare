@@ -69,7 +69,8 @@ h1 {
   gap: 8px;
 }
 
-.status-strip span {
+.status-strip span,
+.github-link {
   border: 1px solid #d7ddcf;
   border-radius: 6px;
   background: #ffffff;
@@ -77,6 +78,19 @@ h1 {
   color: #3b4537;
   font-weight: 700;
   font-size: 13px;
+}
+
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  color: #1f2a1f;
+}
+
+.github-link:hover {
+  border-color: #98aa8c;
+  background: #f8fbf4;
 }
 
 .workspace {

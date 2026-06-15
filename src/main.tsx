@@ -7,6 +7,7 @@ import {
   Eraser,
   FileArchive,
   FileImage,
+  Github,
   Grid3X3,
   ImageUp,
   ListFilter,
@@ -149,6 +150,16 @@ function App() {
           <span>{settings.mc_version}</span>
           <span>{settings.art_mode === "map" ? "Map Art" : "Pixel Art"}</span>
           <span>{outputSize}</span>
+          <a
+            className="github-link"
+            href="https://github.com/ArcherY417/mc-pixel-litematic-cloudflare"
+            target="_blank"
+            rel="noreferrer"
+            title="Open GitHub repository"
+          >
+            <Github size={16} />
+            <span>GitHub</span>
+          </a>
         </div>
       </header>
 
