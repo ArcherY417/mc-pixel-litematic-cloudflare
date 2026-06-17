@@ -425,6 +425,7 @@ function nearestBlock(
   if (quality === "high" && colorHsl) {
     best = pastelLightenIndex(colorHsl, best, paletteHsl, x, y);
     best = pastelTintIndex(color, colorHsl, best, paletteHsl, x, y);
+    bestDistance = hueAwareLabDistance(colorHsl, paletteHsl[best], squaredDistance(colorLab!, paletteLab[best]));
   }
   return { index: best, distance: Math.sqrt(bestDistance) };
 }
