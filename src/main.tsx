@@ -347,6 +347,7 @@ function App() {
               ["wool", "羊毛"],
               ["concrete", "混凝土"],
               ["terracotta", "陶瓦"],
+              ["pixel_art", "推荐"],
               ["map_art", "地图画"],
               ["survival", "生存"],
               ["custom", "自定义"]

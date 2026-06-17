@@ -9,6 +9,7 @@ type MatchResult = { index: number; distance: number };
 
 const DITHER_STRENGTH = 0.34;
 const DITHER_ERROR_LIMIT = 42;
+const BAYER_4X4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((value) => (value + 0.5) / 16);
 
 export async function convertInBrowser(file: File, settings: Settings): Promise<ConvertResponse> {
   const art = await convertImage(file, settings);
@@ -118,7 +119,7 @@ function matchPixels(
       if (alpha < 8 && settings.transparent_mode === "black") setWork(work, idx, [0, 0, 0]);
 
       const color: [number, number, number] = [clamp(work[idx]), clamp(work[idx + 1]), clamp(work[idx + 2])];
-      const match = nearestBlock(color, paletteRgb, paletteLab, paletteHsl, settings.quality);
+      const match = nearestBlock(color, paletteRgb, paletteLab, paletteHsl, settings.quality, x, y);
       const selected = settings.replacements[blocks[match.index].id] || blocks[match.index].id;
       blockRow.push(selected);
       heightRow.push(settings.art_mode === "map" && settings.map_variant === "stairs" ? Math.round(luminance(color) / 255 * 3) : 0);
@@ -140,7 +141,9 @@ function nearestBlock(
   paletteRgb: [number, number, number][],
   paletteLab: Lab[],
   paletteHsl: Hsl[],
-  quality: Settings["quality"]
+  quality: Settings["quality"],
+  x: number,
+  y: number
 ): MatchResult {
   let best = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -156,7 +159,84 @@ function nearestBlock(
       bestDistance = distance;
     }
   }
+  if (quality === "high" && colorHsl) {
+    best = pastelLightenIndex(colorHsl, best, paletteHsl, x, y);
+    best = pastelTintIndex(color, colorHsl, best, paletteHsl, x, y);
+  }
   return { index: best, distance: Math.sqrt(bestDistance) };
+}
+
+function pastelLightenIndex(sourceHsl: Hsl, best: number, paletteHsl: Hsl[], x: number, y: number) {
+  const bestHsl = paletteHsl[best];
+  const lightnessGap = sourceHsl[2] - bestHsl[2];
+  if (sourceHsl[2] < 0.62 || lightnessGap < 0.04) return best;
+  const warmPastel = (sourceHsl[0] <= 52 || sourceHsl[0] >= 350) && sourceHsl[2] > 0.64;
+
+  let neutral = -1;
+  let neutralScore = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < paletteHsl.length; i += 1) {
+    const candidate = paletteHsl[i];
+    if (candidate[1] > 0.09 || candidate[2] <= bestHsl[2] + 0.05) continue;
+    const score = Math.abs(candidate[2] - sourceHsl[2]) * 100 + candidate[1] * 30;
+    if (score < neutralScore) {
+      neutral = i;
+      neutralScore = score;
+    }
+  }
+  if (neutral < 0) return best;
+  if (warmPastel) return sourceHsl[2] > 0.79 ? neutral : best;
+
+  const neutralHsl = paletteHsl[neutral];
+  const denominator = Math.max(0.001, neutralHsl[2] - bestHsl[2]);
+  const amount = clamp01(lightnessGap / denominator) * (sourceHsl[1] > 0.45 ? 0.58 : 0.72);
+  const threshold = BAYER_4X4[((y + 1) % 4) * 4 + ((x + 2) % 4)];
+  return amount > threshold ? neutral : best;
+}
+
+function pastelTintIndex(
+  color: [number, number, number],
+  sourceHsl: Hsl,
+  best: number,
+  paletteHsl: Hsl[],
+  x: number,
+  y: number
+) {
+  const chroma = Math.max(color[0], color[1], color[2]) - Math.min(color[0], color[1], color[2]);
+  if (chroma < 14 || sourceHsl[1] < 0.08 || sourceHsl[2] < 0.48) return best;
+  if ((sourceHsl[0] <= 52 || sourceHsl[0] >= 350) && sourceHsl[2] > 0.55) return best;
+
+  const bestHsl = paletteHsl[best];
+  if (bestHsl[1] >= 0.09 && hueDistance(sourceHsl[0], bestHsl[0]) < 54) return best;
+
+  let tint = -1;
+  let tintScore = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < paletteHsl.length; i += 1) {
+    const candidate = paletteHsl[i];
+    if (candidate[1] < 0.12) continue;
+    const hueDiff = hueDistance(sourceHsl[0], candidate[0]);
+    if (hueDiff > 50) continue;
+    const lightnessGap = Math.abs(sourceHsl[2] - candidate[2]);
+    const score = hueDiff * 2.4 + lightnessGap * 120 - candidate[1] * 18;
+    if (score < tintScore) {
+      tint = i;
+      tintScore = score;
+    }
+  }
+  if (tint < 0) return best;
+
+  const tintHsl = paletteHsl[tint];
+  const lightnessGap = Math.abs(sourceHsl[2] - tintHsl[2]);
+  const neutralBase = bestHsl[1] < 0.09;
+  const baseAmount =
+    clamp01((chroma - 12) / 86) *
+    clamp01((sourceHsl[2] - 0.45) / 0.5) *
+    clamp01(1 - Math.max(0, lightnessGap - 0.14) / 0.5) *
+    0.58;
+  const minimumPastelTint =
+    neutralBase && sourceHsl[2] > 0.68 ? clamp01((chroma - 16) / 70) * 0.62 : 0;
+  const amount = Math.max(baseAmount, minimumPastelTint);
+  const threshold = BAYER_4X4[(y % 4) * 4 + (x % 4)];
+  return amount > threshold ? tint : best;
 }
 
 function shouldDiffuse(color: [number, number, number], labDistance: number) {
@@ -271,17 +351,27 @@ function squaredDistance(a: Lab, b: Lab) {
 }
 
 function hueAwareLabDistance(sourceHsl: Hsl, candidateHsl: Hsl, labSquared: number) {
-  if (sourceHsl[1] < 0.08) return labSquared;
+  const sourceS = sourceHsl[1];
+  const sourceL = sourceHsl[2];
+  const candidateS = candidateHsl[1];
+  if (sourceS < 0.045) return labSquared;
 
   const hueDiff = hueDistance(sourceHsl[0], candidateHsl[0]);
-  const sourceIsGreenish = sourceHsl[0] >= 58 && sourceHsl[0] <= 178 && sourceHsl[1] > 0.12;
-  const candidateIsWarm = candidateHsl[0] >= 28 && candidateHsl[0] <= 62 && candidateHsl[1] > 0.12;
-  const candidateIsGreenish = candidateHsl[0] >= 68 && candidateHsl[0] <= 178 && candidateHsl[1] > 0.10;
+  const colorIntent = clamp01((sourceS - 0.045) / 0.22) * (sourceL > 0.55 ? 1.18 : 1);
+  const candidateIsNeutral = candidateS < 0.075;
+  const candidateHasColor = candidateS > 0.08;
+  const nearHue = clamp01(1 - hueDiff / 48);
+  const farHue = clamp01((hueDiff - 58) / 92);
 
-  let penalty = (hueDiff / 180) ** 2 * 260;
-  if (sourceIsGreenish && candidateIsWarm) penalty += 520;
-  if (sourceIsGreenish && candidateIsGreenish) penalty -= 120;
+  let penalty = (hueDiff / 180) ** 2 * (220 + 300 * colorIntent);
+  if (candidateIsNeutral) penalty += (sourceL > 0.55 ? 260 : 150) * colorIntent;
+  if (candidateHasColor) penalty -= nearHue * (190 + 160 * colorIntent) * colorIntent;
+  if (candidateHasColor) penalty += farHue * 260 * colorIntent;
   return Math.max(0, labSquared + penalty);
+}
+
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
 }
 
 function hueDistance(a: number, b: number) {
