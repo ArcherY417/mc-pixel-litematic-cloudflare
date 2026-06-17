@@ -280,6 +280,7 @@ function matchMapArt(
 
   const paletteRgb = palette.map((candidate) => candidate.mapRgb);
   const paletteLab = paletteRgb.map((rgb) => rgbToLab(rgb));
+  const paletteHsl = paletteRgb.map((rgb) => rgbToHsl(rgb));
   const chosen: (MapColorCandidate | null)[][] = [];
   const blockGrid: string[][] = [];
   const mapPreviewRgb = new Uint8ClampedArray(width * height * 4);
@@ -304,7 +305,7 @@ function matchMapArt(
       if (alpha < 8 && settings.transparent_mode === "white") setWork(work, idx, [255, 255, 255]);
       if (alpha < 8 && settings.transparent_mode === "black") setWork(work, idx, [0, 0, 0]);
       const color: [number, number, number] = [clamp(work[idx]), clamp(work[idx + 1]), clamp(work[idx + 2])];
-      const match = nearestMapColor(color, paletteRgb, paletteLab, settings.quality);
+      const match = nearestMapColor(color, paletteRgb, paletteLab, paletteHsl, settings.quality, x, y);
       const candidate = palette[match.index];
       candidateRow.push(candidate);
       blockRow.push(candidate.blockId);
@@ -338,17 +339,28 @@ function nearestMapColor(
   color: [number, number, number],
   paletteRgb: [number, number, number][],
   paletteLab: Lab[],
-  quality: Settings["quality"]
+  paletteHsl: Hsl[],
+  quality: Settings["quality"],
+  x: number,
+  y: number
 ): MatchResult {
   let best = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
   const colorLab = quality === "fast" ? null : rgbToLab(color);
+  const colorHsl = quality === "fast" ? null : rgbToHsl(color);
   for (let i = 0; i < paletteRgb.length; i += 1) {
-    const distance = quality === "fast" ? weightedRgbDistance(color, paletteRgb[i]) : squaredDistance(colorLab!, paletteLab[i]);
+    const distance =
+      quality === "fast"
+        ? weightedRgbDistance(color, paletteRgb[i])
+        : hueAwareLabDistance(colorHsl!, paletteHsl[i], squaredDistance(colorLab!, paletteLab[i]));
     if (distance < bestDistance) {
       best = i;
       bestDistance = distance;
     }
+  }
+  if (quality === "high" && colorHsl && colorLab) {
+    best = pastelTintIndex(color, colorHsl, best, paletteHsl, x, y);
+    bestDistance = hueAwareLabDistance(colorHsl, paletteHsl[best], squaredDistance(colorLab, paletteLab[best]));
   }
   return { index: best, distance: Math.sqrt(bestDistance) };
 }
@@ -490,14 +502,14 @@ function pastelTintIndex(
 
   const tintHsl = paletteHsl[tint];
   const lightnessGap = Math.abs(sourceHsl[2] - tintHsl[2]);
-  const neutralBase = bestHsl[1] < 0.09;
+  const neutralBase = bestHsl[1] < 0.16 || (sourceHsl[2] > 0.68 && hueDistance(sourceHsl[0], bestHsl[0]) > 58);
   const baseAmount =
     clamp01((chroma - 12) / 86) *
     clamp01((sourceHsl[2] - 0.45) / 0.5) *
     clamp01(1 - Math.max(0, lightnessGap - 0.14) / 0.5) *
     0.58;
   const minimumPastelTint =
-    neutralBase && sourceHsl[2] > 0.68 ? clamp01((chroma - 16) / 70) * 0.62 : 0;
+    neutralBase && sourceHsl[2] > 0.68 ? clamp01((chroma - 14) / 55) * 0.85 : 0;
   const amount = Math.max(baseAmount, minimumPastelTint);
   const threshold = BAYER_4X4[(y % 4) * 4 + (x % 4)];
   return amount > threshold ? tint : best;
@@ -506,7 +518,11 @@ function pastelTintIndex(
 function shouldDiffuse(color: [number, number, number], labDistance: number) {
   const lum = luminance(color);
   const chroma = Math.max(color[0], color[1], color[2]) - Math.min(color[0], color[1], color[2]);
-  if (lum > 205 && chroma < 42) return false;
+  if (lum > 205 && chroma < 42) {
+    const [hue, saturation] = rgbToHsl(color);
+    const coolPastel = saturation > 0.12 && hue >= 55 && hue <= 220;
+    if (!coolPastel) return false;
+  }
   if (labDistance < 9 || labDistance > 46) return false;
   return true;
 }
@@ -662,7 +678,7 @@ function hueAwareLabDistance(sourceHsl: Hsl, candidateHsl: Hsl, labSquared: numb
 
   const hueDiff = hueDistance(sourceHsl[0], candidateHsl[0]);
   const colorIntent = clamp01((sourceS - 0.045) / 0.22) * (sourceL > 0.55 ? 1.18 : 1);
-  const candidateIsNeutral = candidateS < 0.075;
+  const candidateIsNeutral = candidateS < 0.08;
   const candidateHasColor = candidateS > 0.08;
   const nearHue = clamp01(1 - hueDiff / 48);
   const farHue = clamp01((hueDiff - 58) / 92);
@@ -789,3 +805,8 @@ function baseBlockId(blockId: string) {
 function blockRgb(blockId: string): [number, number, number] | undefined {
   return BLOCK_BY_ID.get(baseBlockId(blockId))?.rgb;
 }
+
+export const browserGeneratorTestHooks = {
+  matchPixels,
+  matchMapArt
+};

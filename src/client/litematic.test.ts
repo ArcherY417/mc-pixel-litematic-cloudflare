@@ -4,6 +4,7 @@ import { createLitematicBytes, packBlockStates, pixelToRegion, schematicDimensio
 import type { Settings } from "../types";
 import { BLOCKS } from "../blocks";
 import { createMapPalette, MAP_ART_BLOCK_IDS } from "./mapPalette";
+import { browserGeneratorTestHooks } from "./browserGenerator";
 
 const settings: Settings = {
   name: "test",
@@ -110,4 +111,54 @@ describe("browser litematic writer helpers", () => {
     expect(nbt).toContain("Properties");
     expect(nbt).toContain("level");
   });
+
+  it("keeps pale green pixel-art areas from collapsing into sand or neutral blocks", () => {
+    const data = solidRgba(4, 4, [222, 246, 226, 255]);
+    const matched = browserGeneratorTestHooks.matchPixels(data, 4, 4, BLOCKS, { ...settings, quality: "high", show_grid: false });
+    const ids = matched.blockGrid.flat();
+    const greenish = ids.filter((id) => /lime|cyan|prismarine|diamond|verdant|green|sea_lantern/.test(id)).length;
+    const sandy = ids.filter((id) => /sand|end_stone|bone_block/.test(id)).length;
+    expect(greenish).toBeGreaterThan(0);
+    expect(sandy).toBeLessThan(ids.length / 2);
+  });
+
+  it("keeps map-art preview colors green-biased for pale green source pixels", () => {
+    const data = solidRgba(4, 4, [222, 246, 226, 255]);
+    const matched = browserGeneratorTestHooks.matchMapArt(data, 4, 4, BLOCKS, {
+      ...settings,
+      art_mode: "map",
+      quality: "high",
+      map_variant: "flat",
+      show_grid: false
+    });
+    const average = averageRgb(matched.mapPreviewRgb);
+    expect(average[1]).toBeGreaterThan(average[0]);
+    expect(average[1]).toBeGreaterThan(average[2]);
+  });
 });
+
+function solidRgba(width: number, height: number, rgba: [number, number, number, number]) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = rgba[0];
+    data[i + 1] = rgba[1];
+    data[i + 2] = rgba[2];
+    data[i + 3] = rgba[3];
+  }
+  return data;
+}
+
+function averageRgb(data: Uint8ClampedArray): [number, number, number] {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    r += data[i];
+    g += data[i + 1];
+    b += data[i + 2];
+    count += 1;
+  }
+  return [r / count, g / count, b / count];
+}
