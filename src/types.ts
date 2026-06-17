@@ -41,6 +41,7 @@ export type Settings = {
   quality: "fast" | "standard" | "high";
   transparent_mode: "air" | "white" | "black";
   palette_mode: "all" | "wool" | "concrete" | "terracotta" | "map_art" | "survival" | "custom";
+  palette_modes: Array<"all" | "wool" | "concrete" | "terracotta" | "map_art" | "survival" | "custom">;
   custom_blocks: string[];
   replacements: Record<string, string>;
   build_plane: "wall" | "floor" | "ceiling";

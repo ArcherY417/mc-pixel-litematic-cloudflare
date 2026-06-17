@@ -143,7 +143,10 @@ function nearestBlock(
   let bestDistance = Number.POSITIVE_INFINITY;
   const colorLab = quality === "fast" ? null : rgbToLab(color);
   for (let i = 0; i < paletteRgb.length; i += 1) {
-    const distance = quality === "fast" ? weightedRgbDistance(color, paletteRgb[i]) : squaredDistance(colorLab!, paletteLab[i]);
+    const distance =
+      quality === "fast"
+        ? weightedRgbDistance(color, paletteRgb[i])
+        : hueAwareLabDistance(color, paletteRgb[i], squaredDistance(colorLab!, paletteLab[i]));
     if (distance < bestDistance) {
       best = i;
       bestDistance = distance;
@@ -261,6 +264,44 @@ function weightedRgbDistance(a: [number, number, number], b: [number, number, nu
 
 function squaredDistance(a: Lab, b: Lab) {
   return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+}
+
+function hueAwareLabDistance(source: [number, number, number], candidate: [number, number, number], labSquared: number) {
+  const sourceHsl = rgbToHsl(source);
+  const candidateHsl = rgbToHsl(candidate);
+  if (sourceHsl.s < 0.08) return labSquared;
+
+  const hueDiff = hueDistance(sourceHsl.h, candidateHsl.h);
+  const sourceIsGreenish = sourceHsl.h >= 58 && sourceHsl.h <= 178 && sourceHsl.s > 0.12;
+  const candidateIsWarm = candidateHsl.h >= 28 && candidateHsl.h <= 62 && candidateHsl.s > 0.12;
+  const candidateIsGreenish = candidateHsl.h >= 68 && candidateHsl.h <= 178 && candidateHsl.s > 0.10;
+
+  let penalty = (hueDiff / 180) ** 2 * 260;
+  if (sourceIsGreenish && candidateIsWarm) penalty += 520;
+  if (sourceIsGreenish && candidateIsGreenish) penalty -= 120;
+  return Math.max(0, labSquared + penalty);
+}
+
+function hueDistance(a: number, b: number) {
+  const diff = Math.abs(a - b) % 360;
+  return Math.min(diff, 360 - diff);
+}
+
+function rgbToHsl(rgb: [number, number, number]) {
+  const r = rgb[0] / 255;
+  const g = rgb[1] / 255;
+  const b = rgb[2] / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l: lightness };
+  const delta = max - min;
+  const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  let hue = 0;
+  if (max === r) hue = (g - b) / delta + (g < b ? 6 : 0);
+  else if (max === g) hue = (b - r) / delta + 2;
+  else hue = (r - g) / delta + 4;
+  return { h: hue * 60, s: saturation, l: lightness };
 }
 
 function rgbToLab(rgb: [number, number, number]): Lab {

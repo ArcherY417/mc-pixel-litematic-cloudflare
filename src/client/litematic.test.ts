@@ -15,6 +15,7 @@ const settings: Settings = {
   quality: "standard",
   transparent_mode: "air",
   palette_mode: "all",
+  palette_modes: ["all"],
   custom_blocks: [],
   replacements: {},
   build_plane: "wall",

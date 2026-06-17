@@ -240,6 +240,29 @@ input:disabled {
   box-shadow: 0 1px 5px rgba(44, 69, 43, 0.14);
 }
 
+.palette-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.palette-options button {
+  min-height: 32px;
+  border: 1px solid #d4dccd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #52604d;
+  padding: 0 10px;
+  font-weight: 800;
+}
+
+.palette-options button.active {
+  border-color: #4d8c55;
+  background: #edf7ec;
+  color: #193d27;
+}
+
 .search-box {
   display: flex;
   align-items: center;
