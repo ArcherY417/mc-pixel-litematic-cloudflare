@@ -4,6 +4,10 @@ import { selectBlocks } from "./palette";
 import { AIR_ID, type ConvertedArt, createLitematicBytes } from "./litematic";
 
 type Lab = [number, number, number];
+type MatchResult = { index: number; distance: number };
+
+const DITHER_STRENGTH = 0.34;
+const DITHER_ERROR_LIMIT = 42;
 
 export async function convertInBrowser(file: File, settings: Settings): Promise<ConvertResponse> {
   const art = await convertImage(file, settings);
@@ -37,11 +41,11 @@ async function convertImage(file: File, settings: Settings): Promise<ConvertedAr
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("浏览器不支持 Canvas 2D。");
+  if (!ctx) throw new Error("Browser does not support Canvas 2D.");
   drawFitted(ctx, bitmap, width, height, settings.fit_mode);
   const source = ctx.getImageData(0, 0, width, height);
   const blocks = selectBlocks(settings);
-  if (!blocks.length) throw new Error("当前方块筛选没有可用方块。");
+  if (!blocks.length) throw new Error("No blocks are available for the selected palette.");
   const matched = matchPixels(source.data, width, height, blocks, settings);
   const previewPng = renderPreview(matched.blockGrid, settings.show_grid);
   const depth = Math.max(1, ...matched.heightGrid.flat()) + 1;
@@ -66,7 +70,10 @@ function drawFitted(
     ctx.drawImage(bitmap, 0, 0, width, height);
     return;
   }
-  const scale = fitMode === "cover" ? Math.max(width / bitmap.width, height / bitmap.height) : Math.min(width / bitmap.width, height / bitmap.height);
+  const scale =
+    fitMode === "cover"
+      ? Math.max(width / bitmap.width, height / bitmap.height)
+      : Math.min(width / bitmap.width, height / bitmap.height);
   const sw = bitmap.width * scale;
   const sh = bitmap.height * scale;
   ctx.drawImage(bitmap, (width - sw) / 2, (height - sh) / 2, sw, sh);
@@ -85,11 +92,11 @@ function matchPixels(
     work[p + 1] = data[i + 1];
     work[p + 2] = data[i + 2];
   }
+
   const paletteRgb = blocks.map((block) => block.rgb);
   const paletteLab = blocks.map((block) => rgbToLab(block.rgb));
   const blockGrid: string[][] = [];
   const heightGrid: number[][] = [];
-  const materials = new Map<string, number>();
   let airCount = 0;
 
   for (let y = 0; y < height; y += 1) {
@@ -107,40 +114,59 @@ function matchPixels(
       }
       if (alpha < 8 && settings.transparent_mode === "white") setWork(work, idx, [255, 255, 255]);
       if (alpha < 8 && settings.transparent_mode === "black") setWork(work, idx, [0, 0, 0]);
+
       const color: [number, number, number] = [clamp(work[idx]), clamp(work[idx + 1]), clamp(work[idx + 2])];
-      const blockIndex = nearestBlock(color, paletteRgb, paletteLab, settings.quality);
-      const selected = settings.replacements[blocks[blockIndex].id] || blocks[blockIndex].id;
+      const match = nearestBlock(color, paletteRgb, paletteLab, settings.quality);
+      const selected = settings.replacements[blocks[match.index].id] || blocks[match.index].id;
       blockRow.push(selected);
-      materials.set(selected, (materials.get(selected) || 0) + 1);
       heightRow.push(settings.art_mode === "map" && settings.map_variant === "stairs" ? Math.round(luminance(color) / 255 * 3) : 0);
-      if (settings.quality === "high") diffuseError(work, width, height, x, y, blocks[blockIndex].rgb);
+
+      if (settings.quality === "high" && shouldDiffuse(color, match.distance)) {
+        diffuseError(work, width, height, x, y, blocks[match.index].rgb);
+      }
     }
     blockGrid.push(blockRow);
     heightGrid.push(heightRow);
   }
-  return { blockGrid, heightGrid, materials, airCount };
+
+  const cleanedGrid = settings.quality === "high" ? despeckleGrid(blockGrid) : blockGrid;
+  return { blockGrid: cleanedGrid, heightGrid, materials: recountMaterials(cleanedGrid), airCount };
 }
 
-function nearestBlock(color: [number, number, number], paletteRgb: [number, number, number][], paletteLab: Lab[], quality: Settings["quality"]) {
+function nearestBlock(
+  color: [number, number, number],
+  paletteRgb: [number, number, number][],
+  paletteLab: Lab[],
+  quality: Settings["quality"]
+): MatchResult {
   let best = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
   const colorLab = quality === "fast" ? null : rgbToLab(color);
   for (let i = 0; i < paletteRgb.length; i += 1) {
-    const distance =
-      quality === "fast"
-        ? weightedRgbDistance(color, paletteRgb[i])
-        : squaredDistance(colorLab!, paletteLab[i]);
+    const distance = quality === "fast" ? weightedRgbDistance(color, paletteRgb[i]) : squaredDistance(colorLab!, paletteLab[i]);
     if (distance < bestDistance) {
       best = i;
       bestDistance = distance;
     }
   }
-  return best;
+  return { index: best, distance: Math.sqrt(bestDistance) };
+}
+
+function shouldDiffuse(color: [number, number, number], labDistance: number) {
+  const lum = luminance(color);
+  const chroma = Math.max(color[0], color[1], color[2]) - Math.min(color[0], color[1], color[2]);
+  if (lum > 205 && chroma < 42) return false;
+  if (labDistance < 9 || labDistance > 46) return false;
+  return true;
 }
 
 function diffuseError(work: Float64Array, width: number, height: number, x: number, y: number, chosen: [number, number, number]) {
   const idx = (y * width + x) * 3;
-  const error: [number, number, number] = [work[idx] - chosen[0], work[idx + 1] - chosen[1], work[idx + 2] - chosen[2]];
+  const error: [number, number, number] = [
+    clampError(work[idx] - chosen[0]),
+    clampError(work[idx + 1] - chosen[1]),
+    clampError(work[idx + 2] - chosen[2])
+  ];
   addError(work, width, height, x + 1, y, error, 7 / 16);
   addError(work, width, height, x - 1, y + 1, error, 3 / 16);
   addError(work, width, height, x, y + 1, error, 5 / 16);
@@ -150,9 +176,9 @@ function diffuseError(work: Float64Array, width: number, height: number, x: numb
 function addError(work: Float64Array, width: number, height: number, x: number, y: number, error: [number, number, number], factor: number) {
   if (x < 0 || y < 0 || x >= width || y >= height) return;
   const idx = (y * width + x) * 3;
-  work[idx] += error[0] * factor;
-  work[idx + 1] += error[1] * factor;
-  work[idx + 2] += error[2] * factor;
+  work[idx] += error[0] * factor * DITHER_STRENGTH;
+  work[idx + 1] += error[1] * factor * DITHER_STRENGTH;
+  work[idx + 2] += error[2] * factor * DITHER_STRENGTH;
 }
 
 function renderPreview(blockGrid: string[][], showGrid: boolean) {
@@ -163,7 +189,7 @@ function renderPreview(blockGrid: string[][], showGrid: boolean) {
   canvas.width = width * factor;
   canvas.height = height * factor;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("浏览器不支持 Canvas 2D。");
+  if (!ctx) throw new Error("Browser does not support Canvas 2D.");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -221,6 +247,10 @@ function clamp(value: number) {
   return Math.max(0, Math.min(255, value));
 }
 
+function clampError(value: number) {
+  return Math.max(-DITHER_ERROR_LIMIT, Math.min(DITHER_ERROR_LIMIT, value));
+}
+
 function luminance(color: [number, number, number]) {
   return color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722;
 }
@@ -252,4 +282,56 @@ function rgbToLab(rgb: [number, number, number]): Lab {
 function labPivot(value: number) {
   const delta = 6 / 29;
   return value > delta ** 3 ? Math.cbrt(value) : value / (3 * delta ** 2) + 4 / 29;
+}
+
+function despeckleGrid(grid: string[][]) {
+  const height = grid.length;
+  const width = grid[0]?.length || 0;
+  const output = grid.map((row) => [...row]);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const current = grid[y][x];
+      if (current === AIR_ID) continue;
+      const counts = new Map<string, number>();
+      for (let yy = y - 1; yy <= y + 1; yy += 1) {
+        for (let xx = x - 1; xx <= x + 1; xx += 1) {
+          if (xx === x && yy === y) continue;
+          if (yy < 0 || yy >= height || xx < 0 || xx >= width) continue;
+          const neighbor = grid[yy][xx];
+          if (neighbor === AIR_ID) continue;
+          counts.set(neighbor, (counts.get(neighbor) || 0) + 1);
+        }
+      }
+      let majority = current;
+      let majorityCount = 0;
+      for (const [blockId, count] of counts.entries()) {
+        if (count > majorityCount) {
+          majority = blockId;
+          majorityCount = count;
+        }
+      }
+      if (majority === current || majorityCount < 5) continue;
+      if (isProtectedDarkLine(current, majority)) continue;
+      output[y][x] = majority;
+    }
+  }
+  return output;
+}
+
+function isProtectedDarkLine(currentId: string, replacementId: string) {
+  const current = BLOCK_BY_ID.get(currentId);
+  const replacement = BLOCK_BY_ID.get(replacementId);
+  if (!current || !replacement) return false;
+  return luminance(current.rgb) < 80 && luminance(replacement.rgb) > 125;
+}
+
+function recountMaterials(grid: string[][]) {
+  const materials = new Map<string, number>();
+  for (const row of grid) {
+    for (const blockId of row) {
+      if (blockId === AIR_ID) continue;
+      materials.set(blockId, (materials.get(blockId) || 0) + 1);
+    }
+  }
+  return materials;
 }
