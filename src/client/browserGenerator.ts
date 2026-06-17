@@ -11,6 +11,7 @@ type MatchResult = { index: number; distance: number };
 const DITHER_STRENGTH = 0.34;
 const DITHER_ERROR_LIMIT = 42;
 const BAYER_4X4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((value) => (value + 0.5) / 16);
+const LANCZOS_RADIUS = 3;
 
 export async function convertInBrowser(file: File, settings: Settings): Promise<ConvertResponse> {
   const art = await convertImage(file, settings);
@@ -40,7 +41,7 @@ export async function convertInBrowser(file: File, settings: Settings): Promise<
 }
 
 async function convertImage(file: File, settings: Settings): Promise<ConvertedArt> {
-  const bitmap = await createImageBitmap(file);
+  const bitmap = await createImageBitmap(file, { colorSpaceConversion: "none", premultiplyAlpha: "none" });
   const [width, height] = outputSize(settings, bitmap.width, bitmap.height);
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -78,17 +79,128 @@ function drawFitted(
   fitMode: Settings["fit_mode"]
 ) {
   ctx.clearRect(0, 0, width, height);
+  const sourceCanvas = document.createElement("canvas");
+  sourceCanvas.width = bitmap.width;
+  sourceCanvas.height = bitmap.height;
+  const sourceCtx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+  if (!sourceCtx) throw new Error("Browser does not support Canvas 2D.");
+  sourceCtx.drawImage(bitmap, 0, 0);
+  const source = sourceCtx.getImageData(0, 0, bitmap.width, bitmap.height);
+
   if (fitMode === "stretch") {
-    ctx.drawImage(bitmap, 0, 0, width, height);
+    ctx.putImageData(resizeLanczos(source, width, height), 0, 0);
     return;
   }
   const scale =
     fitMode === "cover"
       ? Math.max(width / bitmap.width, height / bitmap.height)
       : Math.min(width / bitmap.width, height / bitmap.height);
-  const sw = bitmap.width * scale;
-  const sh = bitmap.height * scale;
-  ctx.drawImage(bitmap, (width - sw) / 2, (height - sh) / 2, sw, sh);
+  const scaledWidth = Math.max(1, Math.round(bitmap.width * scale));
+  const scaledHeight = Math.max(1, Math.round(bitmap.height * scale));
+  const scaled = resizeLanczos(source, scaledWidth, scaledHeight);
+  if (fitMode === "cover") {
+    const left = Math.max(0, Math.floor((scaledWidth - width) / 2));
+    const top = Math.max(0, Math.floor((scaledHeight - height) / 2));
+    ctx.putImageData(cropImageData(scaled, left, top, width, height), 0, 0);
+    return;
+  }
+  ctx.putImageData(scaled, Math.floor((width - scaledWidth) / 2), Math.floor((height - scaledHeight) / 2));
+}
+
+function resizeLanczos(source: ImageData, targetWidth: number, targetHeight: number) {
+  const output = new ImageData(targetWidth, targetHeight);
+  const xWeights = buildLanczosWeights(source.width, targetWidth);
+  const yWeights = buildLanczosWeights(source.height, targetHeight);
+  const temp = new Float64Array(targetWidth * source.height * 4);
+
+  for (let sy = 0; sy < source.height; sy += 1) {
+    for (let dx = 0; dx < targetWidth; dx += 1) {
+      const weights = xWeights[dx];
+      const out = (sy * targetWidth + dx) * 4;
+      for (const { index: sx, weight } of weights) {
+        const src = (sy * source.width + sx) * 4;
+        temp[out] += source.data[src] * weight;
+        temp[out + 1] += source.data[src + 1] * weight;
+        temp[out + 2] += source.data[src + 2] * weight;
+        temp[out + 3] += source.data[src + 3] * weight;
+      }
+    }
+  }
+
+  for (let dy = 0; dy < targetHeight; dy += 1) {
+    const weights = yWeights[dy];
+    for (let dx = 0; dx < targetWidth; dx += 1) {
+      const out = (dy * targetWidth + dx) * 4;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      for (const { index: sy, weight } of weights) {
+        const src = (sy * targetWidth + dx) * 4;
+        r += temp[src] * weight;
+        g += temp[src + 1] * weight;
+        b += temp[src + 2] * weight;
+        a += temp[src + 3] * weight;
+      }
+      output.data[out] = clamp(Math.round(r));
+      output.data[out + 1] = clamp(Math.round(g));
+      output.data[out + 2] = clamp(Math.round(b));
+      output.data[out + 3] = clamp(Math.round(a));
+    }
+  }
+  return output;
+}
+
+function cropImageData(source: ImageData, left: number, top: number, width: number, height: number) {
+  const output = new ImageData(width, height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const sx = left + x;
+      const sy = top + y;
+      if (sx < 0 || sy < 0 || sx >= source.width || sy >= source.height) continue;
+      const src = (sy * source.width + sx) * 4;
+      const dst = (y * width + x) * 4;
+      output.data[dst] = source.data[src];
+      output.data[dst + 1] = source.data[src + 1];
+      output.data[dst + 2] = source.data[src + 2];
+      output.data[dst + 3] = source.data[src + 3];
+    }
+  }
+  return output;
+}
+
+function buildLanczosWeights(sourceSize: number, targetSize: number) {
+  const scale = targetSize / sourceSize;
+  const filterScale = scale < 1 ? 1 / scale : 1;
+  const radius = LANCZOS_RADIUS * filterScale;
+  const weights: Array<Array<{ index: number; weight: number }>> = [];
+  for (let target = 0; target < targetSize; target += 1) {
+    const center = (target + 0.5) / scale - 0.5;
+    const start = Math.max(0, Math.ceil(center - radius));
+    const end = Math.min(sourceSize - 1, Math.floor(center + radius));
+    const entries: Array<{ index: number; weight: number }> = [];
+    let total = 0;
+    for (let source = start; source <= end; source += 1) {
+      const weight = lanczos((center - source) / filterScale);
+      if (weight === 0) continue;
+      entries.push({ index: source, weight });
+      total += weight;
+    }
+    if (total === 0) {
+      entries.push({ index: Math.max(0, Math.min(sourceSize - 1, Math.round(center))), weight: 1 });
+    } else {
+      for (const entry of entries) entry.weight /= total;
+    }
+    weights.push(entries);
+  }
+  return weights;
+}
+
+function lanczos(x: number) {
+  const ax = Math.abs(x);
+  if (ax < 1e-7) return 1;
+  if (ax >= LANCZOS_RADIUS) return 0;
+  return (LANCZOS_RADIUS * Math.sin(Math.PI * ax) * Math.sin((Math.PI * ax) / LANCZOS_RADIUS)) / (Math.PI * Math.PI * ax * ax);
 }
 
 function matchPixels(
@@ -131,11 +243,12 @@ function matchPixels(
       const color: [number, number, number] = [clamp(work[idx]), clamp(work[idx + 1]), clamp(work[idx + 2])];
       const match = nearestBlock(color, paletteRgb, paletteLab, paletteHsl, settings.quality, x, y);
       const selected = settings.replacements[blocks[match.index].id] || blocks[match.index].id;
+      const selectedRgb = blockRgb(selected) ?? blocks[match.index].rgb;
       blockRow.push(selected);
       heightRow.push(settings.art_mode === "map" && settings.map_variant === "stairs" ? Math.round(luminance(color) / 255 * 3) : 0);
 
       if (settings.quality === "high" && shouldDiffuse(color, match.distance)) {
-        diffuseError(work, width, height, x, y, blocks[match.index].rgb);
+        diffuseError(work, width, height, x, y, selectedRgb);
       }
     }
     blockGrid.push(blockRow);
@@ -670,4 +783,8 @@ function recountPlacementMaterials(placements: BlockPlacement[]) {
 
 function baseBlockId(blockId: string) {
   return blockId.split("[", 1)[0];
+}
+
+function blockRgb(blockId: string): [number, number, number] | undefined {
+  return BLOCK_BY_ID.get(baseBlockId(blockId))?.rgb;
 }

@@ -81,6 +81,16 @@ function App() {
     setSettings((current) => ({ ...current, [key]: value }));
   }
 
+  function updateArtMode(value: Settings["art_mode"]) {
+    setSettings((current) => ({
+      ...current,
+      art_mode: value,
+      fit_mode: value === "map" ? "cover" : current.fit_mode,
+      build_plane: value === "map" ? "floor" : current.build_plane,
+      map_preview: value === "map" ? "map" : current.map_preview
+    }));
+  }
+
   function chooseFile(next: File | null) {
     if (!next) return;
     setFile(next);
@@ -235,7 +245,7 @@ function App() {
               ["pixel", "普通"],
               ["map", "Map Art"]
             ]}
-            onChange={(value) => update("art_mode", value as Settings["art_mode"])}
+            onChange={(value) => updateArtMode(value as Settings["art_mode"])}
           />
 
           {settings.art_mode === "pixel" ? (
