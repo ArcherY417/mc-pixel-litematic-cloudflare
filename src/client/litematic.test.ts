@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { gunzipSync } from "fflate";
 import { createLitematicBytes, packBlockStates, pixelToRegion, schematicDimensions, type ConvertedArt } from "./litematic";
 import type { Settings } from "../types";
+import { BLOCKS } from "../blocks";
+import { createMapPalette } from "./mapPalette";
 
 const settings: Settings = {
   name: "test",
@@ -23,6 +25,7 @@ const settings: Settings = {
   map_columns: 1,
   map_rows: 1,
   map_variant: "flat",
+  map_preview: "map",
   show_grid: true
 };
 
@@ -68,5 +71,36 @@ describe("browser litematic writer helpers", () => {
     expect(nbt).toContain("MinecraftDataVersion");
     expect(nbt).toContain("BlockStatePalette");
     expect(nbt).toContain("minecraft:white_wool");
+  });
+
+  it("uses flat and staircase map-art shade sets", () => {
+    const flat = createMapPalette(BLOCKS, "flat");
+    const stairs = createMapPalette(BLOCKS, "stairs");
+    expect(new Set(flat.map((candidate) => candidate.shade))).toEqual(new Set([1]));
+    expect(new Set(stairs.map((candidate) => candidate.shade))).toEqual(new Set([0, 1, 2]));
+    expect(stairs.find((candidate) => candidate.isWater && candidate.shade === 0)?.waterDepth).toBe(10);
+    expect(stairs.find((candidate) => candidate.isWater && candidate.shade === 1)?.waterDepth).toBe(5);
+    expect(stairs.find((candidate) => candidate.isWater && candidate.shade === 2)?.waterDepth).toBe(1);
+  });
+
+  it("writes block state properties for water placements", () => {
+    const waterArt: ConvertedArt = {
+      ...art,
+      width: 1,
+      height: 1,
+      depth: 2,
+      blockGrid: [["minecraft:water[level=0]"]],
+      heightGrid: [[1]],
+      placements: [
+        { x: 0, y: 0, level: 0, blockId: "minecraft:stone" },
+        { x: 0, y: 0, level: 1, blockId: "minecraft:water[level=0]" }
+      ],
+      materials: new Map([["minecraft:water[level=0]", 1]])
+    };
+    const bytes = createLitematicBytes(waterArt, { ...settings, art_mode: "map", build_plane: "floor" });
+    const nbt = new TextDecoder().decode(gunzipSync(bytes));
+    expect(nbt).toContain("minecraft:water");
+    expect(nbt).toContain("Properties");
+    expect(nbt).toContain("level");
   });
 });

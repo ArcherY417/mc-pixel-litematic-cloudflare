@@ -23,6 +23,8 @@ export type ConvertResponse = {
   block_count: number;
   air_count: number;
   preview_png: string;
+  block_preview_png?: string;
+  map_preview_png?: string;
   materials: MaterialItem[];
   downloads: Record<string, string>;
 };
@@ -49,5 +51,6 @@ export type Settings = {
   map_columns: number;
   map_rows: number;
   map_variant: "flat" | "stairs";
+  map_preview: "map" | "blocks";
   show_grid: boolean;
 };

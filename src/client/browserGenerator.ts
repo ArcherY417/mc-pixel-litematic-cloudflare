@@ -1,7 +1,8 @@
 import { BLOCK_BY_ID } from "../blocks";
 import type { BlockInfo, ConvertResponse, MaterialItem, Settings } from "../types";
 import { selectBlocks } from "./palette";
-import { AIR_ID, type ConvertedArt, createLitematicBytes } from "./litematic";
+import { createMapPalette, type MapColorCandidate } from "./mapPalette";
+import { AIR_ID, type BlockPlacement, type ConvertedArt, createLitematicBytes } from "./litematic";
 
 type Lab = [number, number, number];
 type Hsl = [number, number, number];
@@ -25,6 +26,8 @@ export async function convertInBrowser(file: File, settings: Settings): Promise<
     block_count: [...art.materials.values()].reduce((sum, count) => sum + count, 0),
     air_count: art.airCount,
     preview_png: art.previewPng,
+    block_preview_png: art.blockPreviewPng,
+    map_preview_png: art.mapPreviewPng,
     materials,
     downloads: {
       litematic: objectUrl(litematic, "application/octet-stream"),
@@ -48,6 +51,13 @@ async function convertImage(file: File, settings: Settings): Promise<ConvertedAr
   const source = ctx.getImageData(0, 0, width, height);
   const blocks = selectBlocks(settings);
   if (!blocks.length) throw new Error("No blocks are available for the selected palette.");
+  if (settings.art_mode === "map") {
+    const matched = matchMapArt(source.data, width, height, blocks, settings);
+    const mapPreview = renderRgbPreview(matched.mapPreviewRgb, width, height, settings.show_grid);
+    const blockPreview = renderRgbPreview(matched.blockPreviewRgb, width, height, settings.show_grid);
+    const previewPng = settings.map_preview === "blocks" ? blockPreview : mapPreview;
+    return { ...matched, previewPng, blockPreviewPng: blockPreview, mapPreviewPng: mapPreview, width, height };
+  }
   const matched = matchPixels(source.data, width, height, blocks, settings);
   const previewPng = renderPreview(matched.blockGrid, settings.show_grid);
   const depth = Math.max(1, ...matched.heightGrid.flat()) + 1;
@@ -134,6 +144,146 @@ function matchPixels(
 
   const cleanedGrid = settings.quality === "high" ? despeckleGrid(blockGrid) : blockGrid;
   return { blockGrid: cleanedGrid, heightGrid, materials: recountMaterials(cleanedGrid), airCount };
+}
+
+function matchMapArt(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  blocks: BlockInfo[],
+  settings: Settings
+): Omit<ConvertedArt, "previewPng" | "blockPreviewPng" | "width" | "height"> & {
+  mapPreviewRgb: Uint8ClampedArray;
+  blockPreviewRgb: Uint8ClampedArray;
+} {
+  const palette = createMapPalette(blocks, settings.map_variant);
+  if (!palette.length) throw new Error("No map-art colors are available for the selected palette.");
+  const work = new Float64Array(width * height * 3);
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 3) {
+    work[p] = data[i];
+    work[p + 1] = data[i + 1];
+    work[p + 2] = data[i + 2];
+  }
+
+  const paletteRgb = palette.map((candidate) => candidate.mapRgb);
+  const paletteLab = paletteRgb.map((rgb) => rgbToLab(rgb));
+  const chosen: (MapColorCandidate | null)[][] = [];
+  const blockGrid: string[][] = [];
+  const mapPreviewRgb = new Uint8ClampedArray(width * height * 4);
+  const blockPreviewRgb = new Uint8ClampedArray(width * height * 4);
+  let airCount = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const candidateRow: (MapColorCandidate | null)[] = [];
+    const blockRow: string[] = [];
+    for (let x = 0; x < width; x += 1) {
+      const src = (y * width + x) * 4;
+      const idx = (y * width + x) * 3;
+      const alpha = data[src + 3];
+      if (alpha < 8 && settings.transparent_mode === "air") {
+        candidateRow.push(null);
+        blockRow.push(AIR_ID);
+        setPreviewPixel(mapPreviewRgb, x, y, width, [0, 0, 0], 0);
+        setPreviewPixel(blockPreviewRgb, x, y, width, [0, 0, 0], 0);
+        airCount += 1;
+        continue;
+      }
+      if (alpha < 8 && settings.transparent_mode === "white") setWork(work, idx, [255, 255, 255]);
+      if (alpha < 8 && settings.transparent_mode === "black") setWork(work, idx, [0, 0, 0]);
+      const color: [number, number, number] = [clamp(work[idx]), clamp(work[idx + 1]), clamp(work[idx + 2])];
+      const match = nearestMapColor(color, paletteRgb, paletteLab, settings.quality);
+      const candidate = palette[match.index];
+      candidateRow.push(candidate);
+      blockRow.push(candidate.blockId);
+      setPreviewPixel(mapPreviewRgb, x, y, width, candidate.mapRgb, 255);
+      setPreviewPixel(blockPreviewRgb, x, y, width, candidate.blockRgb, 255);
+      if (settings.quality === "high" && shouldDiffuse(color, match.distance)) {
+        diffuseError(work, width, height, x, y, candidate.mapRgb);
+      }
+    }
+    chosen.push(candidateRow);
+    blockGrid.push(blockRow);
+  }
+
+  const heightGrid = mapHeightGrid(chosen, settings);
+  const placements = mapPlacements(chosen, heightGrid);
+  const materials = recountPlacementMaterials(placements);
+  const maxLevel = placements.reduce((max, placement) => Math.max(max, placement.level), 0);
+  return {
+    blockGrid,
+    heightGrid,
+    placements,
+    materials,
+    airCount,
+    depth: maxLevel + 1,
+    mapPreviewRgb,
+    blockPreviewRgb
+  };
+}
+
+function nearestMapColor(
+  color: [number, number, number],
+  paletteRgb: [number, number, number][],
+  paletteLab: Lab[],
+  quality: Settings["quality"]
+): MatchResult {
+  let best = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const colorLab = quality === "fast" ? null : rgbToLab(color);
+  for (let i = 0; i < paletteRgb.length; i += 1) {
+    const distance = quality === "fast" ? weightedRgbDistance(color, paletteRgb[i]) : squaredDistance(colorLab!, paletteLab[i]);
+    if (distance < bestDistance) {
+      best = i;
+      bestDistance = distance;
+    }
+  }
+  return { index: best, distance: Math.sqrt(bestDistance) };
+}
+
+function mapHeightGrid(chosen: (MapColorCandidate | null)[][], settings: Settings) {
+  const height = chosen.length;
+  const width = chosen[0]?.length || 0;
+  const grid = Array.from({ length: height }, () => new Array(width).fill(0));
+  if (settings.map_variant !== "stairs") return grid;
+  let min = 0;
+  for (let x = 0; x < width; x += 1) {
+    let level = 0;
+    for (let y = 0; y < height; y += 1) {
+      const candidate = chosen[y][x];
+      if (candidate && !candidate.isWater) {
+        if (candidate.shade === 2) level += 1;
+        if (candidate.shade === 0) level -= 1;
+      }
+      grid[y][x] = level;
+      min = Math.min(min, level);
+    }
+  }
+  if (min < 0) {
+    for (const row of grid) {
+      for (let x = 0; x < row.length; x += 1) row[x] -= min;
+    }
+  }
+  return grid;
+}
+
+function mapPlacements(chosen: (MapColorCandidate | null)[][], heightGrid: number[][]): BlockPlacement[] {
+  const placements: BlockPlacement[] = [];
+  for (let y = 0; y < chosen.length; y += 1) {
+    for (let x = 0; x < chosen[y].length; x += 1) {
+      const candidate = chosen[y][x];
+      if (!candidate) continue;
+      const baseLevel = heightGrid[y][x];
+      if (candidate.isWater) {
+        placements.push({ x, y, level: baseLevel, blockId: "minecraft:stone" });
+        for (let i = 1; i <= candidate.waterDepth; i += 1) {
+          placements.push({ x, y, level: baseLevel + i, blockId: candidate.blockId });
+        }
+      } else {
+        placements.push({ x, y, level: baseLevel, blockId: candidate.blockId });
+      }
+    }
+  }
+  return placements;
 }
 
 function nearestBlock(
@@ -280,7 +430,7 @@ function renderPreview(blockGrid: string[][], showGrid: boolean) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const block = BLOCK_BY_ID.get(blockGrid[y][x]);
+      const block = BLOCK_BY_ID.get(baseBlockId(blockGrid[y][x]));
       if (!block) continue;
       ctx.fillStyle = `rgb(${block.rgb[0]}, ${block.rgb[1]}, ${block.rgb[2]})`;
       ctx.fillRect(x * factor, y * factor, factor, factor);
@@ -295,11 +445,51 @@ function renderPreview(blockGrid: string[][], showGrid: boolean) {
   return canvas.toDataURL("image/png");
 }
 
+function renderRgbPreview(data: Uint8ClampedArray, width: number, height: number, showGrid: boolean) {
+  const factor = Math.max(1, Math.min(Math.floor(768 / Math.max(width, height)), 12));
+  const source = document.createElement("canvas");
+  source.width = width;
+  source.height = height;
+  const sourceCtx = source.getContext("2d");
+  if (!sourceCtx) throw new Error("Browser does not support Canvas 2D.");
+  sourceCtx.putImageData(new ImageData(new Uint8ClampedArray(data), width, height), 0, 0);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width * factor;
+  canvas.height = height * factor;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Browser does not support Canvas 2D.");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+  if (showGrid && factor >= 6) {
+    ctx.strokeStyle = "rgba(20, 24, 28, 0.28)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= canvas.width; x += factor) line(ctx, x, 0, x, canvas.height);
+    for (let y = 0; y <= canvas.height; y += factor) line(ctx, 0, y, canvas.width, y);
+  }
+  return canvas.toDataURL("image/png");
+}
+
+function setPreviewPixel(
+  data: Uint8ClampedArray,
+  x: number,
+  y: number,
+  width: number,
+  rgb: [number, number, number],
+  alpha: number
+) {
+  const offset = (y * width + x) * 4;
+  data[offset] = rgb[0];
+  data[offset + 1] = rgb[1];
+  data[offset + 2] = rgb[2];
+  data[offset + 3] = alpha;
+}
+
 function materialItems(materials: Map<string, number>): MaterialItem[] {
   return [...materials.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([id, count]) => {
-      const block = BLOCK_BY_ID.get(id);
+      const block = BLOCK_BY_ID.get(baseBlockId(id));
       return { id, count, name: block?.name || id, rgb: block?.rgb || [0, 0, 0] };
     });
 }
@@ -467,4 +657,17 @@ function recountMaterials(grid: string[][]) {
     }
   }
   return materials;
+}
+
+function recountPlacementMaterials(placements: BlockPlacement[]) {
+  const materials = new Map<string, number>();
+  for (const placement of placements) {
+    if (placement.blockId === AIR_ID) continue;
+    materials.set(placement.blockId, (materials.get(placement.blockId) || 0) + 1);
+  }
+  return materials;
+}
+
+function baseBlockId(blockId: string) {
+  return blockId.split("[", 1)[0];
 }

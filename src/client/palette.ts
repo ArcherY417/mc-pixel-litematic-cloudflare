@@ -1,5 +1,6 @@
 import { BLOCKS } from "../blocks";
 import type { BlockInfo, Settings } from "../types";
+import { MAP_ART_BLOCK_IDS } from "./mapPalette";
 
 const PIXEL_ART_BLOCKS = new Set([
   "minecraft:white_wool",
@@ -46,7 +47,7 @@ export function blockMatchesPalette(block: BlockInfo, modes: Settings["palette_m
   return modes.some((mode) => {
     if (mode === "all") return true;
     if (mode === "pixel_art") return PIXEL_ART_BLOCKS.has(block.id);
-    if (mode === "map_art") return block.map_art;
+    if (mode === "map_art") return MAP_ART_BLOCK_IDS.has(block.id);
     if (mode === "survival") return block.survival;
     if (mode === "custom") return true;
     return block.categories.includes(mode);
