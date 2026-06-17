@@ -3,7 +3,7 @@ import { gunzipSync } from "fflate";
 import { createLitematicBytes, packBlockStates, pixelToRegion, schematicDimensions, type ConvertedArt } from "./litematic";
 import type { Settings } from "../types";
 import { BLOCKS } from "../blocks";
-import { createMapPalette } from "./mapPalette";
+import { createMapPalette, MAP_ART_BLOCK_IDS } from "./mapPalette";
 
 const settings: Settings = {
   name: "test",
@@ -78,9 +78,16 @@ describe("browser litematic writer helpers", () => {
     const stairs = createMapPalette(BLOCKS, "stairs");
     expect(new Set(flat.map((candidate) => candidate.shade))).toEqual(new Set([1]));
     expect(new Set(stairs.map((candidate) => candidate.shade))).toEqual(new Set([0, 1, 2]));
+    expect(flat).toHaveLength(51);
+    expect(stairs).toHaveLength(153);
     expect(stairs.find((candidate) => candidate.isWater && candidate.shade === 0)?.waterDepth).toBe(10);
     expect(stairs.find((candidate) => candidate.isWater && candidate.shade === 1)?.waterDepth).toBe(5);
     expect(stairs.find((candidate) => candidate.isWater && candidate.shade === 2)?.waterDepth).toBe(1);
+  });
+
+  it("keeps every map-art base color backed by a selectable block", () => {
+    const blockIds = new Set(BLOCKS.map((block) => block.id));
+    expect([...MAP_ART_BLOCK_IDS].filter((blockId) => !blockIds.has(blockId))).toEqual([]);
   });
 
   it("writes block state properties for water placements", () => {
