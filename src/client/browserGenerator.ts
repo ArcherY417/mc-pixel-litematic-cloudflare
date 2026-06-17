@@ -41,7 +41,7 @@ export async function convertInBrowser(file: File, settings: Settings): Promise<
 }
 
 async function convertImage(file: File, settings: Settings): Promise<ConvertedArt> {
-  const bitmap = await createImageBitmap(file, { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  const bitmap = await createImageBitmap(file);
   const [width, height] = outputSize(settings, bitmap.width, bitmap.height);
   const canvas = document.createElement("canvas");
   canvas.width = width;
