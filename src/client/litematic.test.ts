@@ -112,28 +112,32 @@ describe("browser litematic writer helpers", () => {
     expect(nbt).toContain("level");
   });
 
-  it("keeps pale green pixel-art areas from collapsing into sand or neutral blocks", () => {
+  it("keeps high quality pixel-art matching aligned with fast mode", () => {
     const data = solidRgba(4, 4, [222, 246, 226, 255]);
-    const matched = browserGeneratorTestHooks.matchPixels(data, 4, 4, BLOCKS, { ...settings, quality: "high", show_grid: false });
-    const ids = matched.blockGrid.flat();
-    const greenish = ids.filter((id) => /lime|cyan|prismarine|diamond|verdant|green|sea_lantern/.test(id)).length;
-    const sandy = ids.filter((id) => /sand|end_stone|bone_block/.test(id)).length;
-    expect(greenish).toBeGreaterThan(0);
-    expect(sandy).toBeLessThan(ids.length / 2);
+    const fast = browserGeneratorTestHooks.matchPixels(data, 4, 4, BLOCKS, { ...settings, quality: "fast", show_grid: false });
+    const high = browserGeneratorTestHooks.matchPixels(data, 4, 4, BLOCKS, { ...settings, quality: "high", show_grid: false });
+    expect(high.blockGrid).toEqual(fast.blockGrid);
+    expect([...high.materials.entries()]).toEqual([...fast.materials.entries()]);
   });
 
-  it("keeps map-art preview colors green-biased for pale green source pixels", () => {
+  it("keeps high quality map-art matching aligned with fast mode", () => {
     const data = solidRgba(4, 4, [222, 246, 226, 255]);
-    const matched = browserGeneratorTestHooks.matchMapArt(data, 4, 4, BLOCKS, {
+    const fast = browserGeneratorTestHooks.matchMapArt(data, 4, 4, BLOCKS, {
+      ...settings,
+      art_mode: "map",
+      quality: "fast",
+      map_variant: "flat",
+      show_grid: false
+    });
+    const high = browserGeneratorTestHooks.matchMapArt(data, 4, 4, BLOCKS, {
       ...settings,
       art_mode: "map",
       quality: "high",
       map_variant: "flat",
       show_grid: false
     });
-    const average = averageRgb(matched.mapPreviewRgb);
-    expect(average[1]).toBeGreaterThan(average[0]);
-    expect(average[1]).toBeGreaterThan(average[2]);
+    expect(high.blockGrid).toEqual(fast.blockGrid);
+    expect(averageRgb(high.mapPreviewRgb)).toEqual(averageRgb(fast.mapPreviewRgb));
   });
 });
 
